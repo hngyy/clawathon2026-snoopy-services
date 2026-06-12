@@ -1,0 +1,7 @@
+greennode-agentbase==1.0.3
+greennode-agent-bridge[langgraph]
+langgraph>=1.0.0,<2.0.0
+langchain-openai>=1.1.0,<2.0.0
+python-dotenv
+PyYAML
+langchain-core

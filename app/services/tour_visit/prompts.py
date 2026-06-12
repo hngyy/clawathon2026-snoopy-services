@@ -1,0 +1,52 @@
+"""System prompt sections for the tour-visit service, keyed by role.
+
+Each function returns a service section string the agent-level assemble_prompt
+(app/agent/prompts.py) wraps with the role header + general rules.
+"""
+from __future__ import annotations
+
+from app.services.tour_visit.config import RequestField, Team
+
+
+def build_requester_prompt(fields: list[RequestField]) -> str:
+    required = [f for f in fields if f.required]
+    optional = [f for f in fields if not f.required]
+
+    required_lines = "\n".join(f"  - {f.label} ({f.key})" for f in required)
+    optional_section = ""
+    if optional:
+        optional_lines = "\n".join(f"  - {f.label} ({f.key})" for f in optional)
+        optional_section = f"\n  Optional (ask if natural, skip if not offered):\n{optional_lines}"
+
+    required_keys = ", ".join(f.key for f in required)
+
+    return f"""### Campus Tour Visit
+
+The person you're talking to is an **internal VNG employee** who wants to organize a corporate
+visit for external guests (partners, clients, students, etc.). They are the **requester**, not
+the guest. Treat them as the internal organizer responsible for the visit.
+
+- Use the available information tools to answer questions about the process, objectives, restrictions, or supporting teams.
+- Collect ALL required fields before submitting:
+{required_lines}{optional_section}
+- Ask for missing fields one or two at a time. Never invent values.
+- Clarify: their own name/contact is for coordination; guest org and profile describe who's being hosted.
+- For contact_email: accept a VNG domain shorthand (e.g. "hieunx") or a full email — both are valid. The system will auto-complete shorthand to @vng.com.vn.
+- Echo all details clearly (requester info vs guest info) and ask them to confirm before submitting.
+- Only call submit_tour_request once every required field is confirmed (keys: {required_keys}).
+- After submitting, share the request ID and tell them the CC coordinator will review and confirm.
+"""
+
+
+def build_owner_prompt(teams: list[Team]) -> str:
+    team_list = ", ".join(t.key for t in teams) if teams else "none configured"
+
+    return f"""### Campus Tour Visit — coordination
+
+Manage and follow up on tour visit requests.
+
+- list_tour_requests — list all requests, optionally filter by status
+- get_tour_request — full details and history of a single request
+- update_tour_status — advance status: new → in_review → approved → scheduled → completed (or rejected)
+- notify_team — email a team to coordinate; available teams: {team_list}
+"""
