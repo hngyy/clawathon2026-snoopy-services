@@ -83,6 +83,7 @@ class TourRepository:
         req_id: str,
         status: str | None = None,
         note: str | None = None,
+        external_refs: dict | None = None,
     ) -> "TourRequest | None":
         with self._lock:
             data = self._read()
@@ -93,10 +94,20 @@ class TourRepository:
             now = datetime.now().isoformat()
             if status:
                 request.status = status
+            if external_refs:
+                # Shallow-merge so e.g. {"trello": {"bie": id}} doesn't clobber other teams.
+                for key, value in external_refs.items():
+                    if isinstance(value, dict) and isinstance(request.external_refs.get(key), dict):
+                        request.external_refs[key].update(value)
+                    else:
+                        request.external_refs[key] = value
             request.updated_at = now
-            request.history.append(
-                StatusEvent(at=now, status=status or request.status, note=note or "").__dict__
-            )
+            # Only record a history event for meaningful status/note changes — not for
+            # bookkeeping-only updates (e.g. saving an external ref).
+            if status or note:
+                request.history.append(
+                    StatusEvent(at=now, status=status or request.status, note=note or "").__dict__
+                )
             data[req_id] = request.to_dict()
             self._write(data)
             return request

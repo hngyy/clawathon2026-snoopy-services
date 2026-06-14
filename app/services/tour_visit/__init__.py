@@ -18,7 +18,13 @@ def register(container: Container, registry: ServiceRegistry) -> None:
     cfg = load(container.config.service("tour_visit"))
     repo = TourRepository(container.settings.data_dir / "tour_requests.json")
 
-    tools = build_tools(repo=repo, mailer=container.mailer, cfg=cfg)
+    tools = build_tools(
+        repo=repo,
+        mailer=container.mailer,
+        cfg=cfg,
+        trello_client=container.trello_client,
+        google_client=container.google_client,
+    )
     registry.add(Service(
         key="tour_visit",
         display_name=cfg.display_name,

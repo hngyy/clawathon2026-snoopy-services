@@ -2,7 +2,15 @@ __pycache__/
 *.py[cod]
 .idea
 .env
+.env.*
+!.env.example
 .greennode.json
+.o365_token_cache.json
+service_account.json
+service-account.json
+# OAuth token caches & other runtime credential cache files
+app/credentials/cache/*
+!app/credentials/cache/.gitkeep
 .agentbase/
 .agentbase-state.json
 *.credentials.json
@@ -14,4 +22,3 @@ build/
 # local runtime data
 outbox.log
 tour_requests.json
-chat-history.md

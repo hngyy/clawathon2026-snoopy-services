@@ -3,7 +3,7 @@
 # NEVER put secrets (SMTP password, API keys) here — those come from env vars.
 
 email:
-  # Sender shown on outgoing mail. Real delivery is wired later in mailer.py.
+  # Sender shown on outgoing mail. Real delivery via app/infrastructure/outlook_client.py.
   from_address: "no-reply@vng.com.vn"
   from_name: "VNG Campus Bot"
 
@@ -73,40 +73,49 @@ services:
         required: false
 
     # Supporting teams the owner (CC coordinator) loops in to prepare a visit.
-    # channel: how the owner reaches them — "email" (sent now) or "trello" (card; wired later).
+    # channel: how the owner reaches them —
+    #   "trello" → create a card on the team's Trello list (set trello_list_id)
+    #   "sheets" → append a task row to the shared Google Sheet
+    #   "email"  → send an email (also the fallback when a channel's client is unconfigured)
     # NOTE: BIE/EB/PR names + emails are placeholders — confirm with CC. IT/AF are from the source doc.
     teams:
       - key: "bie"
         name: "Brand & Internal Events (BIE)"
         channel: "trello"
-        email: "bie@vng.com.vn"
+        #email: "bie@vng.com.vn"
+        email: "hieunx@vng.com.vn"
+        trello_list_id: "6a2e51af8d92f52833002064"  # "To Do" list on BIE team board
         responsibilities:
           - "Photography"
           - "Welcome screen design"
           - "Partner gifts & tea break"
       - key: "eb"
         name: "Employer Branding (EB)"
-        channel: "email"
-        email: "eb@vng.com.vn"
+        channel: "sheets"
+        #email: "eb@vng.com.vn"
+        email: "hieunx@vng.com.vn"
         responsibilities:
           - "Welcome screen display & presentation"
           - "Social & internal communications"
       - key: "pr"
         name: "Public Relations (PR)"
-        channel: "email"
-        email: "pr@vng.com.vn"
+        channel: "sheets"
+        #email: "pr@vng.com.vn"
+        email: "hieunx@vng.com.vn"
         responsibilities:
           - "Media & press coverage"
       - key: "it"
         name: "IT"
-        channel: "email"
-        email: "request.it@vng.com.vn"
+        channel: "sheets"
+        #email: "request.it@vng.com.vn"
+        email: "hieunx@vng.com.vn"
         responsibilities:
           - "Equipment & technical setup (laptop, screen, projector, system support)"
       - key: "af"
         name: "Administration & Facilities (AF)"
-        channel: "email"
-        email: "afservices@vng.com.vn"
+        channel: "sheets"
+        #email: "afservices@vng.com.vn"
+        email: "hieunx@vng.com.vn"
         responsibilities:
           - "Room booking & setup"
           - "Water & refreshments"

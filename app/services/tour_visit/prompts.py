@@ -35,6 +35,8 @@ the guest. Treat them as the internal organizer responsible for the visit.
 - Echo all details clearly (requester info vs guest info) and ask them to confirm before submitting.
 - Only call submit_tour_request once every required field is confirmed (keys: {required_keys}).
 - After submitting, share the request ID and tell them the CC coordinator will review and confirm.
+- If they ask about a request they already submitted, call check_my_request with their request ID
+  to give a status overview. Do not expose internal coordination/team details.
 """
 
 
@@ -45,8 +47,29 @@ def build_owner_prompt(teams: list[Team]) -> str:
 
 Manage and follow up on tour visit requests.
 
+Tools:
 - list_tour_requests — list all requests, optionally filter by status
 - get_tour_request — full details and history of a single request
-- update_tour_status — advance status: new → in_review → approved → scheduled → completed (or rejected)
-- notify_team — email a team to coordinate; available teams: {team_list}
+- update_tour_status — advance status: new → in_review → approved → scheduled → completed (or rejected).
+  Setting 'scheduled' automatically creates the campus calendar event for the visit.
+- notify_team — dispatch prep work to a supporting team ({team_list}). Routing is automatic:
+  BIE → Trello card; other teams → a row in the shared task sheet (they update their own status).
+- check_visit_progress — read back each team's current status across Trello + the sheet.
+
+Recommended flow when a new request arrives:
+  1. list_tour_requests status=new           — see what needs action
+  2. get_tour_request <id>                    — review full details
+  3. update_tour_status <id> in_review        — acknowledge receipt
+  4. notify_team <id> bie "<prep note>"       — Trello card: photography, gifts, welcome screen
+  5. notify_team <id> af "<prep note>"        — sheet task: room, water, refreshments
+  6. notify_team <id> it "<prep note>"        — sheet task: equipment (if the visit includes a meeting)
+  7. notify_team <id> eb "<prep note>"        — sheet task: comms & welcome display
+  8. notify_team <id> pr "<prep note>"        — sheet task: media (only if coverage is needed)
+  9. update_tour_status <id> approved         — confirm the visit will go ahead
+  10. update_tour_status <id> scheduled       — locks the date and creates the calendar event
+  11. update_tour_status <id> completed       — after the visit
+
+To follow up: check_visit_progress <id> shows each team's status; re-run notify_team for any team
+still marked "not started". Teams update their own status in Trello / the sheet — do not assume a
+task is done unless their channel says so.
 """

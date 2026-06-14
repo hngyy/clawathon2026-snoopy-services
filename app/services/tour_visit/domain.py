@@ -46,6 +46,9 @@ class TourRequest:
     created_at: str = ""
     updated_at: str = ""
     history: list = field(default_factory=list)
+    # External system references for read-back, e.g.
+    #   {"trello": {"bie": "<card_id>"}, "calendar": "<event_url>"}
+    external_refs: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)

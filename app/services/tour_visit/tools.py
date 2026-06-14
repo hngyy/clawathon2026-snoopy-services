@@ -6,16 +6,35 @@ tool with no code change required.
 """
 from __future__ import annotations
 
+import logging
+
 from langchain_core.tools import StructuredTool, tool
 
-from app.infrastructure.mailer import EmailSender
+from app.infrastructure.outlook_client import OutlookSender
 from app.services.config import Rule
 from app.services.tour_visit.config import TourServiceConfig
 from app.services.tour_visit.domain import TourStatus
 from app.services.tour_visit.repository import TourRepository
 
 
+logger = logging.getLogger("tour_bot.tour_visit")
+
 _VNG_DOMAIN = "vng.com.vn"
+
+# Requester-facing status copy (curated — never exposes owner/team internals).
+_STATUS_OVERVIEW = {
+    "new":       "Received — waiting for the campus tour coordinator to review.",
+    "in_review": "Under review by the campus tour coordinator.",
+    "approved":  "Approved — the coordinator is arranging the schedule.",
+    "scheduled": "Scheduled — your visit date is confirmed and our teams are preparing.",
+    "completed": "Completed — thank you for hosting!",
+    "rejected":  "Not approved. Please contact the campus tour coordinator for details.",
+}
+# Ordered stages shown as the progress track (rejected is terminal/off-track).
+_STAGE_TRACK = [
+    ("new", "Received"), ("in_review", "Reviewed"),
+    ("approved", "Approved"), ("scheduled", "Scheduled"), ("completed", "Completed"),
+]
 
 
 def _normalize_contact_email(value: str) -> str:
@@ -36,11 +55,20 @@ def _make_rule_tool(rule: Rule) -> StructuredTool:
     )
 
 
-def build_tools(repo: TourRepository, mailer: EmailSender, cfg: TourServiceConfig) -> dict[str, list]:
+def build_tools(
+    repo: TourRepository,
+    mailer: OutlookSender,
+    cfg: TourServiceConfig,
+    trello_client=None,
+    google_client=None,
+) -> dict[str, list]:
     """Return role-keyed tools: {"requester": [...], "owner": [...]}.
 
     The requester set includes all rule tools auto-generated from cfg.rules.
     (The owner role inherits the requester tools via `extends` in config.yaml.)
+
+    trello_client / google_client are optional; when a team's channel client is
+    unavailable, notify_team falls back to email so the flow always completes.
     """
 
     # ── Rule tools (auto-generated from rules/ directory) ─────────────
@@ -133,10 +161,57 @@ def build_tools(repo: TourRepository, mailer: EmailSender, cfg: TourServiceConfi
             subject=f"[Visit Request] {request.id} — {organization}",
             body=body,
         )
+        confirmation_body = (
+            f"Your corporate visit request has been received and is pending review.\n\n"
+            f"Request ID   : {request.id}\n"
+            f"── Visit details ──────────────────\n"
+            f"Organization : {organization}\n"
+            f"Guest profile: {guest_profile}\n"
+            f"Group size   : {group_size}\n"
+            f"Visit type   : {visit_type}\n"
+            f"Visit date   : {visit_date}\n"
+            f"Purpose      : {purpose}\n"
+            f"Meeting topic: {meeting_topic}\n"
+            f"Partner gift : {partner_gift}\n\n"
+            f"{cfg.owner_name} will review and confirm the schedule with you shortly.\n"
+            f"Keep this request ID for any follow-up: {request.id}"
+        )
+        mailer.send(
+            to=contact_email,
+            subject=f"[Visit Request Confirmation] {request.id} — {organization}",
+            body=confirmation_body,
+        )
         return (
             f"Your corporate visit request has been submitted (ID: {request.id}).\n"
             f"I've notified {cfg.owner_name}, who will review and confirm "
             f"the schedule with you at {contact_email}."
+        )
+
+    @tool
+    def check_my_request(request_id: str) -> str:
+        """Check the status of a corporate visit request you submitted, by its request ID
+        (the TOUR-XXXX id from your confirmation). Returns a high-level status overview —
+        not the internal team task breakdown."""
+        r = repo.get(request_id)
+        if not r:
+            return ("No request found with that ID. Please check the request ID from your "
+                    "confirmation email, or submit a new request.")
+
+        status_line = _STATUS_OVERVIEW.get(r.status, r.status)
+
+        if r.status == TourStatus.REJECTED.value:
+            track = ""   # off-track; the generic status line already covers it
+        else:
+            track = "Progress: " + " -> ".join(
+                (f"[{label}]" if key == r.status else label) for key, label in _STAGE_TRACK
+            ) + "\n"
+
+        updated = (r.updated_at or r.created_at or "").split("T")[0]
+        return (
+            f"Request {r.id} — {r.organization}, visit on {r.visit_date}\n"
+            f"Status: {status_line}\n"
+            f"{track}"
+            f"Last updated: {updated}"
         )
 
     # ── Owner tools ───────────────────────────────────────────────────
@@ -183,19 +258,41 @@ def build_tools(repo: TourRepository, mailer: EmailSender, cfg: TourServiceConfi
     @tool
     def update_tour_status(request_id: str, status: str, note: str = "") -> str:
         """(Owner) Update the status of a tour request.
-        Valid statuses: new, in_review, approved, scheduled, completed, rejected."""
+        Valid statuses: new, in_review, approved, scheduled, completed, rejected.
+        Setting status to 'scheduled' also creates a calendar event for the visit."""
         if not TourStatus.is_valid(status):
             return f"Invalid status '{status}'. Valid: {', '.join(TourStatus.values())}."
         r = repo.update(request_id, status=status, note=note)
         if not r:
             return f"No request found with ID {request_id}."
+
+        # Create the campus calendar event once the visit is scheduled — idempotent.
+        if status == TourStatus.SCHEDULED.value and google_client and not r.external_refs.get("calendar"):
+            try:
+                link = google_client.create_visit_event(
+                    request_id=r.id,
+                    organization=r.organization,
+                    visit_date=r.visit_date,
+                    group_size=r.group_size,
+                    purpose=r.purpose,
+                    visit_type=r.visit_type,
+                )
+                repo.update(request_id, external_refs={"calendar": link})
+                return f"Request {request_id} updated to 'scheduled'. Calendar event: {link}"
+            except Exception as exc:
+                logger.warning("Calendar event creation failed for %s: %s", request_id, exc)
+                return (
+                    f"Request {request_id} updated to 'scheduled', but the calendar event "
+                    f"could not be created ({exc})."
+                )
         return f"Request {request_id} updated to '{status}'."
 
     @tool
     def notify_team(request_id: str, team_key: str, message: str) -> str:
-        """(Owner) Loop in a supporting team about a visit request to prepare their part.
+        """(Owner) Loop in a supporting team to prepare their part of a visit.
         team_key is one of the configured team keys (e.g. bie, eb, pr, it, af).
-        Use get_supporting_teams to see who handles what and via which channel."""
+        Routes by the team's channel: BIE → Trello card, others → shared Google Sheet,
+        with email as the fallback if a channel's client is not configured."""
         r = repo.get(request_id)
         if not r:
             return f"No request found with ID {request_id}."
@@ -213,13 +310,73 @@ def build_tools(repo: TourRepository, mailer: EmailSender, cfg: TourServiceConfi
             f"Your responsibilities: {resp}\n\n"
             f"Note from coordinator:\n{message}"
         )
-        # NOTE: Trello-channel teams are emailed for now; Trello card creation is wired later.
-        mailer.send(to=team.email, subject=f"[Visit {r.id}] Action needed — {team.name}", body=body)
-        repo.update(request_id, note=f"Notified team '{team_key}' (via {team.channel}): {message}")
-        channel_note = " (Trello card pending integration; emailed for now)" if team.channel == "trello" else ""
-        return f"Notified {team.name} about {request_id}{channel_note}."
+        card_name = f"[Visit {r.id}] {r.organization} — {r.visit_date}"
+        refs: dict = {}
+        try:
+            if team.channel == "trello" and trello_client and team.trello_list_id:
+                card = trello_client.create_card(team.trello_list_id, card_name, body)
+                refs = {"trello": {team.key: card.get("id")}}
+                outcome = f"Created a Trello card for {team.name}"
+            elif team.channel == "sheets" and google_client:
+                google_client.add_task_row(
+                    team_name=team.name,
+                    request_id=r.id,
+                    organization=r.organization,
+                    visit_date=r.visit_date,
+                    responsibilities=list(team.responsibilities),
+                    note=message,
+                )
+                outcome = f"Added a task row for {team.name} to the shared sheet"
+            else:
+                raise RuntimeError(f"no client for channel '{team.channel}'")
+        except Exception as exc:
+            logger.warning("notify_team %s via %s failed (%s) — emailing", team_key, team.channel, exc)
+            mailer.send(to=team.email, subject=f"[Visit {r.id}] Action needed — {team.name}", body=body)
+            outcome = f"Notified {team.name} by email (fallback)"
+
+        # Always record the notification in the request history (audit trail).
+        repo.update(request_id, note=f"Notified '{team_key}' via {team.channel}: {message}",
+                    external_refs=refs or None)
+        return f"{outcome} for {request_id}."
+
+    @tool
+    def check_visit_progress(request_id: str) -> str:
+        """(Owner) Consolidated prep status for one request across Trello + the shared sheet.
+        Shows each notified team's current status and flags any not yet started."""
+        r = repo.get(request_id)
+        if not r:
+            return f"No request found with ID {request_id}."
+        lines = [f"{r.id} — {r.organization} (request status: {r.status})"]
+
+        trello_refs = r.external_refs.get("trello", {})
+        for team_key, card_id in trello_refs.items():
+            team = cfg.team(team_key)
+            label = team.name if team else team_key
+            status = "unknown"
+            if trello_client:
+                try:
+                    card = trello_client.get_card(card_id)
+                    status = trello_client.list_name(card.get("idList", ""))
+                except Exception as exc:
+                    logger.warning("Trello read failed for %s: %s", card_id, exc)
+            lines.append(f"  - {label} (Trello): {status}")
+
+        if google_client:
+            try:
+                for row in google_client.get_task_rows(request_id):
+                    flag = "  ← not started" if row["status"].strip().lower() == "not started" else ""
+                    lines.append(f"  - {row['team']} (Sheet): {row['status']}{flag}")
+            except Exception as exc:
+                lines.append(f"  - (could not read the shared sheet: {exc})")
+
+        if len(lines) == 1:
+            lines.append("  (no team tasks recorded yet — use notify_team to dispatch prep work.)")
+        return "\n".join(lines)
 
     return {
-        "requester": rule_tools + [submit_tour_request],
-        "owner": [list_tour_requests, get_tour_request, update_tour_status, notify_team],
+        "requester": rule_tools + [submit_tour_request, check_my_request],
+        "owner": [
+            list_tour_requests, get_tour_request, update_tour_status,
+            notify_team, check_visit_progress,
+        ],
     }

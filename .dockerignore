@@ -7,11 +7,10 @@ __pycache__/
 .greennode.json
 .agentbase/
 .agentbase-state.json
-*.credentials.json
 .git/
 .gitignore
 *.md
-!rules/**/*.md
+!knowledge_base/**/*.md
 # local runtime data — do not bake into the image
 outbox.log
 tour_requests.json

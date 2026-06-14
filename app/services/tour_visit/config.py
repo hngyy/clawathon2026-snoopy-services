@@ -22,8 +22,9 @@ class Team:
     key: str
     name: str
     email: str
-    channel: str = "email"  # "email" | "trello" — how the owner reaches this team
+    channel: str = "email"  # "trello" | "sheets" | "email" — how the owner reaches this team
     responsibilities: tuple = ()
+    trello_list_id: str = ""  # Trello list to create cards in (only for channel="trello")
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,7 @@ class TourServiceConfig(ServiceConfig):
 
 def load(raw: dict) -> TourServiceConfig:
     owner_raw = raw.get("owner", {})
-    rules_dir = Path(raw.get("rules_dir", "rules/tour_visit"))
+    rules_dir = Path(raw.get("rules_dir", "knowledge_base/tour_visit"))
     return TourServiceConfig(
         display_name=raw.get("display_name", "Tour Visit"),
         enabled=raw.get("enabled", True),
@@ -53,6 +54,7 @@ def load(raw: dict) -> TourServiceConfig:
                 email=t.get("email", ""),
                 channel=t.get("channel", "email"),
                 responsibilities=tuple(t.get("responsibilities", [])),
+                trello_list_id=t.get("trello_list_id", ""),
             )
             for t in raw.get("teams", [])
         ],
