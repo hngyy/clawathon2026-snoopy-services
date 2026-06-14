@@ -7,6 +7,8 @@ tool with no code change required.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from langchain_core.tools import StructuredTool, tool
 
@@ -20,6 +22,12 @@ from app.services.tour_visit.repository import TourRepository
 logger = logging.getLogger("tour_bot.tour_visit")
 
 _VNG_DOMAIN = "vng.com.vn"
+_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+
+def _fmt_slot(start: datetime, end: datetime) -> str:
+    """Render a (start, end) window as 'YYYY-MM-DD HH:MM–HH:MM'."""
+    return f"{start.strftime('%Y-%m-%d %H:%M')}–{end.strftime('%H:%M')}"
 
 # Requester-facing status copy (curated — never exposes owner/team internals).
 _STATUS_OVERVIEW = {
@@ -74,6 +82,25 @@ def build_tools(
     # ── Rule tools (auto-generated from rules/ directory) ─────────────
     rule_tools = [_make_rule_tool(r) for r in cfg.rules]
 
+    def _availability_report(start_dt, end_dt) -> tuple[bool, str]:
+        """(available?, message) for a parsed window. Assumes google_client is set.
+        On conflict, the message lists up to 3 nearest free slots."""
+        conflicts = google_client.find_conflicts(start_dt, end_dt)
+        if not conflicts:
+            return True, f"✅ {_fmt_slot(start_dt, end_dt)} is available."
+        lines = [f"⚠️ {_fmt_slot(start_dt, end_dt)} is not available — it overlaps an existing visit."]
+        try:
+            slots = google_client.suggest_free_slots(start_dt, count=3)
+        except Exception:
+            slots = []
+        if slots:
+            lines.append("Nearest available slots:")
+            lines += [f"  {i + 1}. {_fmt_slot(s, e)}" for i, (s, e) in enumerate(slots)]
+            lines.append("Please pick one of these, or propose another date/time.")
+        else:
+            lines.append("I couldn't find a free slot in the next two weeks — please propose another date/time.")
+        return False, "\n".join(lines)
+
     # ── Requester tools ───────────────────────────────────────────────
 
     @tool
@@ -81,6 +108,7 @@ def build_tools(
         requester_name: str = "",
         organization: str = "",
         visit_date: str = "",
+        visit_time: str = "",
         group_size: int = 0,
         purpose: str = "",
         contact_email: str = "",
@@ -90,12 +118,14 @@ def build_tools(
         meeting_topic: str = "",
     ) -> str:
         """Submit a corporate visit request on behalf of the internal requester.
-        Only call this once all required fields have been collected and confirmed.
+        Only call this once all required fields are collected and confirmed AND the
+        chosen date/time has been checked with check_calendar_availability.
 
         Args:
             requester_name: Name of the internal VNG employee organizing the visit (NOT the guest).
             organization: Guest organization / company being hosted.
-            visit_date: Preferred date (and time, if provided) of the visit.
+            visit_date: Preferred date of the visit.
+            visit_time: Preferred time window of the visit (e.g. "14:00-16:00" or "2pm").
             group_size: Number of external visiting guests.
             purpose: Purpose / reason for the visit.
             contact_email: Requester's email to receive confirmation.
@@ -108,6 +138,7 @@ def build_tools(
             "requester_name": requester_name,
             "organization": organization,
             "visit_date": visit_date,
+            "visit_time": visit_time,
             "group_size": group_size,
             "purpose": purpose,
             "contact_email": contact_email,
@@ -126,10 +157,24 @@ def build_tools(
         if missing:
             return f"Cannot submit — still missing required fields: {', '.join(missing)}."
 
+        # Re-check the slot against the calendar — gates the submit even if the LLM
+        # skipped check_calendar_availability, and catches a slot booked in the meantime.
+        if google_client:
+            window = google_client._parse_visit_window(visit_date, visit_time)
+            if window:
+                try:
+                    available, report = _availability_report(*window)
+                except Exception as exc:
+                    logger.warning("Availability re-check failed at submit: %s", exc)
+                    available, report = True, ""  # don't block on a calendar outage
+                if not available:
+                    return f"I can't book that slot — {report}"
+
         request = repo.create(
             requester_name=requester_name,
             organization=organization,
             visit_date=visit_date,
+            visit_time=visit_time,
             group_size=group_size,
             purpose=purpose,
             contact_email=contact_email,
@@ -151,6 +196,7 @@ def build_tools(
             f"── Visit details ──────────────────\n"
             f"Visit type   : {visit_type}\n"
             f"Visit date   : {visit_date}\n"
+            f"Visit time   : {visit_time}\n"
             f"Purpose      : {purpose}\n"
             f"Meeting topic: {meeting_topic}\n"
             f"Partner gift : {partner_gift}\n\n"
@@ -170,6 +216,7 @@ def build_tools(
             f"Group size   : {group_size}\n"
             f"Visit type   : {visit_type}\n"
             f"Visit date   : {visit_date}\n"
+            f"Visit time   : {visit_time}\n"
             f"Purpose      : {purpose}\n"
             f"Meeting topic: {meeting_topic}\n"
             f"Partner gift : {partner_gift}\n\n"
@@ -213,6 +260,36 @@ def build_tools(
             f"{track}"
             f"Last updated: {updated}"
         )
+
+    @tool
+    def check_calendar_availability(visit_date: str, visit_time: str) -> str:
+        """THE calendar tool. Queries the live campus Google Calendar to check whether a
+        specific visit date + time is free, and returns up to 3 nearest free slots if it
+        is taken. This is the ONLY way to know real availability — never answer an
+        availability question from the booking-rules text. Call it whenever the user asks
+        if a date/time is free, and ALWAYS before confirming or submitting a request.
+
+        Args:
+            visit_date: Requested date, e.g. "2026-07-10".
+            visit_time: Requested time window, e.g. "14:00-16:00" or "2pm".
+        """
+        if not google_client:
+            return ("Availability can't be verified right now (calendar not configured) — "
+                    "you may proceed to confirm and submit.")
+        window = google_client._parse_visit_window(visit_date, visit_time)
+        if not window:
+            return ("I couldn't read that date/time. Please give a clear date and a start time — "
+                    "e.g. date '2026-07-10' and time '14:00' or '2pm-4pm'.")
+        start_dt, end_dt = window
+        if start_dt < datetime.now(_TZ):
+            return "That date/time is in the past. Please choose a future date and time."
+        try:
+            available, report = _availability_report(start_dt, end_dt)
+        except Exception as exc:
+            logger.warning("Availability check failed: %s", exc)
+            return ("I couldn't reach the calendar to check availability right now — you may proceed; "
+                    "the coordinator will confirm the final schedule.")
+        return report if not available else f"{report} You can confirm and submit this slot."
 
     # ── Owner tools ───────────────────────────────────────────────────
 
@@ -276,6 +353,7 @@ def build_tools(
                     group_size=r.group_size,
                     purpose=r.purpose,
                     visit_type=r.visit_type,
+                    visit_time=r.visit_time,
                 )
                 repo.update(request_id, external_refs={"calendar": link})
                 return f"Request {request_id} updated to 'scheduled'. Calendar event: {link}"
@@ -374,7 +452,7 @@ def build_tools(
         return "\n".join(lines)
 
     return {
-        "requester": rule_tools + [submit_tour_request, check_my_request],
+        "requester": rule_tools + [check_calendar_availability, submit_tour_request, check_my_request],
         "owner": [
             list_tour_requests, get_tour_request, update_tour_status,
             notify_team, check_visit_progress,

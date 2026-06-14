@@ -17,12 +17,22 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, time as dtime, timedelta
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("tour_bot.google")
 
 _SHEET_RANGE = "A:J"
 _STATUS_DEFAULT = "Not started"
+
+# Availability / scheduling constants (could move to config.yaml later).
+_TZ_NAME = "Asia/Ho_Chi_Minh"
+_TZ = ZoneInfo(_TZ_NAME)
+_WORK_START = 9            # bookable hours: 09:00 ..
+_WORK_END = 17            # .. 17:00
+_DEFAULT_DURATION_H = 2    # assumed visit length when only a start time is given
+_SUGGEST_DAYS = 14         # how far ahead to look for free slots
+_SLOT_STEP_MIN = 30        # granularity when scanning for free slots
 
 
 class GoogleClientError(RuntimeError):
@@ -146,35 +156,143 @@ class GoogleClient:
         group_size: int,
         purpose: str,
         visit_type: str,
+        visit_time: str = "",
     ) -> str:
-        """Create an all-day event on the shared calendar. Returns the event htmlLink.
+        """Create an event on the shared calendar. Returns the event htmlLink.
 
-        visit_date is free text; we parse best-effort. On parse failure we still
-        create the event (on today's date) with the raw text flagged in the title,
-        so the visit is never silently dropped.
+        Creates a TIMED event when visit_date + visit_time parse into a window
+        (so time-slot availability checks are meaningful); otherwise falls back to
+        an all-day event with the raw date flagged, so the visit is never dropped.
         """
         if not self._calendar_id:
             raise GoogleClientError("GOOGLE_CALENDAR_ID is not configured.")
 
-        day, summary_suffix = self._parse_visit_day(visit_date)
-        summary = f"Campus Visit — {organization} ({group_size} guests){summary_suffix}"
         description = (
             f"Request ID: {request_id}\n"
             f"Organization: {organization}\n"
             f"Visit type: {visit_type}\n"
             f"Requested date (raw): {visit_date}\n"
+            f"Requested time (raw): {visit_time}\n"
             f"Group size: {group_size}\n"
             f"Purpose: {purpose}"
         )
-        body = {
-            "summary": summary,
-            "description": description,
-            "start": {"date": day.isoformat()},
-            "end": {"date": (day + timedelta(days=1)).isoformat()},
-        }
+        summary = f"Campus Visit — {organization} ({group_size} guests)"
+
+        window = self._parse_visit_window(visit_date, visit_time)
+        if window:
+            start_dt, end_dt = window
+            body = {
+                "summary": summary,
+                "description": description,
+                "start": {"dateTime": start_dt.isoformat(), "timeZone": _TZ_NAME},
+                "end": {"dateTime": end_dt.isoformat(), "timeZone": _TZ_NAME},
+            }
+        else:
+            day, summary_suffix = self._parse_visit_day(visit_date)
+            body = {
+                "summary": summary + summary_suffix,
+                "description": description,
+                "start": {"date": day.isoformat()},
+                "end": {"date": (day + timedelta(days=1)).isoformat()},
+            }
         event = self._calendar_api().events().insert(calendarId=self._calendar_id, body=body).execute()
         logger.info("Created calendar event %s for %s", event.get("id"), request_id)
         return event.get("htmlLink", event.get("id", ""))
+
+    # ── Availability ──────────────────────────────────────────────────────────
+    def find_conflicts(self, start_dt: datetime, end_dt: datetime) -> list:
+        """Return [{summary, start, end}] for calendar events overlapping [start, end).
+        All-day events block that day's full working hours."""
+        if not self._calendar_id:
+            raise GoogleClientError("GOOGLE_CALENDAR_ID is not configured.")
+        day_start = start_dt.astimezone(_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = end_dt.astimezone(_TZ).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        events = self._list_events(day_start, day_end)
+        conflicts = []
+        for ev in events:
+            ev_start, ev_end = self._event_window(ev)
+            if ev_start and ev_start < end_dt and start_dt < ev_end:  # half-open overlap
+                conflicts.append({"summary": ev.get("summary", "(busy)"), "start": ev_start, "end": ev_end})
+        return conflicts
+
+    def suggest_free_slots(self, from_dt: datetime, duration_h: int = _DEFAULT_DURATION_H, count: int = 3) -> list:
+        """Return up to `count` free (start, end) windows of `duration_h` hours within
+        working hours, starting from `from_dt`'s day and scanning forward."""
+        if not self._calendar_id:
+            raise GoogleClientError("GOOGLE_CALENDAR_ID is not configured.")
+        duration = timedelta(hours=duration_h)
+        now = datetime.now(_TZ)
+        base_day = max(from_dt.astimezone(_TZ), now).date()
+        suggestions: list = []
+        for d in range(_SUGGEST_DAYS):
+            day = base_day + timedelta(days=d)
+            day_start = datetime.combine(day, dtime(0, 0), tzinfo=_TZ)
+            events = self._list_events(day_start, day_start + timedelta(days=1))
+            windows = [self._event_window(ev) for ev in events]
+            cursor = datetime.combine(day, dtime(_WORK_START, 0), tzinfo=_TZ)
+            close = datetime.combine(day, dtime(_WORK_END, 0), tzinfo=_TZ)
+            while cursor + duration <= close:
+                cand_end = cursor + duration
+                if cursor >= now and not any(s and s < cand_end and cursor < e for s, e in windows):
+                    suggestions.append((cursor, cand_end))
+                    if len(suggestions) >= count:
+                        return suggestions
+                cursor += timedelta(minutes=_SLOT_STEP_MIN)
+        return suggestions
+
+    def _list_events(self, time_min: datetime, time_max: datetime) -> list:
+        return self._calendar_api().events().list(
+            calendarId=self._calendar_id,
+            timeMin=time_min.isoformat(),
+            timeMax=time_max.isoformat(),
+            singleEvents=True,
+            orderBy="startTime",
+        ).execute().get("items", [])
+
+    @staticmethod
+    def _event_window(ev: dict):
+        """Resolve an event to a tz-aware (start, end). All-day events block the
+        working hours of their start day. Returns (None, None) if unresolvable."""
+        from dateutil import parser as date_parser
+
+        s, e = ev.get("start", {}), ev.get("end", {})
+        try:
+            if s.get("dateTime"):
+                return (date_parser.isoparse(s["dateTime"]).astimezone(_TZ),
+                        date_parser.isoparse(e["dateTime"]).astimezone(_TZ))
+            if s.get("date"):
+                day = date_parser.parse(s["date"]).date()
+                return (datetime.combine(day, dtime(_WORK_START, 0), tzinfo=_TZ),
+                        datetime.combine(day, dtime(_WORK_END, 0), tzinfo=_TZ))
+        except (ValueError, OverflowError):
+            pass
+        return (None, None)
+
+    @classmethod
+    def _parse_visit_window(cls, visit_date: str, visit_time: str):
+        """Parse visit_date + visit_time into a tz-aware (start, end). Accepts
+        "14:00-16:00", "2pm-4pm", or a single start ("2pm" → +default duration).
+        Returns None if either part is unparseable."""
+        from dateutil import parser as date_parser
+
+        try:
+            day = date_parser.parse(visit_date, fuzzy=True).date()
+        except (ValueError, OverflowError):
+            return None
+        vt = (visit_time or "").strip().lower().replace("–", "-").replace(" to ", "-")
+        parts = [p.strip() for p in vt.split("-") if p.strip()]
+        if not parts:
+            return None
+        try:
+            start_t = date_parser.parse(parts[0]).time()
+            end_t = date_parser.parse(parts[1]).time() if len(parts) >= 2 else None
+        except (ValueError, OverflowError):
+            return None
+        start_dt = datetime.combine(day, start_t, tzinfo=_TZ)
+        end_dt = datetime.combine(day, end_t, tzinfo=_TZ) if end_t else start_dt + timedelta(hours=_DEFAULT_DURATION_H)
+        if end_dt <= start_dt:
+            end_dt = start_dt + timedelta(hours=_DEFAULT_DURATION_H)
+        return start_dt, end_dt
 
     @staticmethod
     def _parse_visit_day(visit_date: str):

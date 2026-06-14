@@ -16,6 +16,7 @@ from app.config import AppConfig
 from app.infrastructure.google_client import GoogleClient
 from app.infrastructure.outlook_client import OutlookSender
 from app.infrastructure.trello_client import TrelloClient
+from app.infrastructure.zalo_bot_client import ZaloBotClient
 from app.settings import Settings
 
 
@@ -26,6 +27,7 @@ class Container:
     mailer: OutlookSender
     trello_client: TrelloClient | None  # built only when Trello creds are set
     google_client: GoogleClient | None  # built only when a service account is set
+    zalo_client: ZaloBotClient | None  # built only when a Zalo bot token is set
     memory_client: object | None  # greennode_agentbase.memory.MemoryClient when memory enabled
 
     @classmethod
@@ -47,6 +49,8 @@ class Container:
                 calendar_id=settings.google_calendar_id,
             )
 
+        zalo_client = ZaloBotClient(settings.zalo_bot_token) if settings.zalo_enabled else None
+
         return cls(
             settings=settings,
             config=config,
@@ -57,5 +61,6 @@ class Container:
             ),
             trello_client=trello_client,
             google_client=google_client,
+            zalo_client=zalo_client,
             memory_client=memory_client,
         )

@@ -64,6 +64,22 @@ class ZaloBotClient:
         logger.info("Sent Zalo message to chat=%s", chat_id)
         return data.get("result", {})
 
+    def send_chat_action(self, chat_id: str, action: str = "typing") -> dict:
+        """Show a transient action indicator in the chat (e.g. "typing") while the
+        agent works. Valid actions: "typing" (upload_photo is coming soon)."""
+        return self._request("sendChatAction", {"chat_id": chat_id, "action": action}).get("result", {})
+
+    def send_photo(self, chat_id: str, photo: str, caption: str | None = None) -> dict:
+        """Send an image by URL. caption is optional (1-2000 chars)."""
+        body = {"chat_id": chat_id, "photo": photo}
+        if caption:
+            body["caption"] = caption
+        return self._request("sendPhoto", body).get("result", {})
+
+    def send_sticker(self, chat_id: str, sticker: str) -> dict:
+        """Send a sticker. `sticker` is a value sourced from https://stickers.zaloapp.com/."""
+        return self._request("sendSticker", {"chat_id": chat_id, "sticker": sticker}).get("result", {})
+
     # ── webhook setup ─────────────────────────────────────────────────────
     def set_webhook(self, url: str, secret_token: str) -> dict:
         """Register the HTTPS webhook URL. secret_token (8-256 chars) is echoed

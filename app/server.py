@@ -10,6 +10,7 @@ ZALO_BOT_TOKEN), a `/zalo/webhook` route is also mounted so the Zalo Bot Platfor
 from __future__ import annotations
 
 import logging
+import secrets
 from datetime import datetime
 
 from greennode_agentbase import GreenNodeAgentBaseApp, PingStatus, RequestContext
@@ -19,17 +20,21 @@ from starlette.routing import Route
 
 from app.agent.router import AgentRouter
 from app.bootstrap import bootstrap
+from app.config import AppConfig
 from app.infrastructure.zalo_bot_client import ZaloBotClient
+from app.infrastructure.zalo_owner_store import OwnerStore
 from app.settings import Settings
 
 logger = logging.getLogger("tour_bot.server")
 
 # Header Zalo attaches to every webhook push, echoing the secret_token we set.
 _ZALO_SECRET_HEADER = "X-Bot-Api-Secret-Token"
+# user_id that resolves to the `owner` role — config.yaml lists it in owner.identities.
+_OWNER_UID = "owner"
 
 
 def create_app() -> GreenNodeAgentBaseApp:
-    _config, router = bootstrap()
+    config, router = bootstrap()
     settings = Settings.from_env()  # dotenv already loaded by bootstrap()
 
     app = GreenNodeAgentBaseApp()
@@ -61,17 +66,45 @@ def create_app() -> GreenNodeAgentBaseApp:
         return PingStatus.HEALTHY
 
     if settings.zalo_enabled:
-        _mount_zalo_webhook(app, router, settings)
+        _mount_zalo_webhook(app, router, config, settings)
         logger.info("Zalo webhook mounted at /zalo/webhook")
 
     return app
 
 
-def _mount_zalo_webhook(app: GreenNodeAgentBaseApp, router: AgentRouter, settings: Settings) -> None:
+def _mount_zalo_webhook(
+    app: GreenNodeAgentBaseApp, router: AgentRouter, config: AppConfig, settings: Settings
+) -> None:
     """Add POST /zalo/webhook. Verifies the secret token, runs the agent for text
-    messages, and replies via the Zalo Bot sendMessage API — all in-process."""
+    messages, and replies via the Zalo Bot sendMessage API — all in-process.
+
+    In-chat commands (handled before the agent): /whoami, /owner <password>, /signout.
+    """
     zalo = ZaloBotClient(settings.zalo_bot_token)
     secret = settings.zalo_webhook_secret
+    owner_password = settings.zalo_owner_password
+    owners = OwnerStore(settings.data_dir / "zalo_owners.json")
+
+    def effective_role(sender: str) -> str:
+        return _OWNER_UID if owners.is_owner(sender) else config.role_for(sender)
+
+    def handle_command(stripped: str, sender: str, display_name: str) -> str | None:
+        """Return a reply string if `stripped` is a recognised command, else None."""
+        low = stripped.lower()
+        if low == "/whoami":
+            return f"Zalo id: {sender}\ndisplay_name: {display_name}\nrole: {effective_role(sender)}"
+        if low == "/owner" or low.startswith("/owner "):
+            pw = stripped.split(maxsplit=1)[1].strip() if " " in stripped else ""
+            if not owner_password:
+                return "Owner elevation is not configured on this bot."
+            if pw and secrets.compare_digest(pw, owner_password):
+                owners.add(sender)
+                return "✅ You are now the owner. You can manage tour requests. Send /signout to switch back."
+            return "❌ Wrong or missing password. Usage: /owner <password>"
+        if low in ("/signout", "/logout", "/requester"):
+            owners.remove(sender)
+            return "You are back to the requester role."
+        return None
 
     async def zalo_webhook(request):
         if secret and request.headers.get(_ZALO_SECRET_HEADER) != secret:
@@ -97,9 +130,25 @@ def _mount_zalo_webhook(app: GreenNodeAgentBaseApp, router: AgentRouter, setting
         # Always ack 200 to Zalo, even on internal failure, to avoid retry storms.
         try:
             if text:
-                sender = str((message.get("from") or {}).get("id") or chat_id)
-                result = await run_in_threadpool(router.chat, sender, chat_id, text)
-                reply = result.get("response") or "Xin lỗi, mình chưa có câu trả lời."
+                from_ = message.get("from") or {}
+                sender = str(from_.get("id") or chat_id)
+
+                command_reply = handle_command(text.strip(), sender, from_.get("display_name", ""))
+                if command_reply is not None:
+                    await run_in_threadpool(zalo.send_message, chat_id, command_reply)
+                    return JSONResponse({"ok": True})
+
+                # Show a "typing" indicator while the agent works (best-effort).
+                try:
+                    await run_in_threadpool(zalo.send_chat_action, chat_id, "typing")
+                except Exception:
+                    logger.debug("sendChatAction failed for chat=%s (non-fatal)", chat_id)
+
+                # Elevated senders act as the owner; everyone else keeps their Zalo id.
+                actor = _OWNER_UID if owners.is_owner(sender) else sender
+                result = await run_in_threadpool(router.chat, actor, chat_id, text)
+                # LLM replies sometimes have leading/trailing blank lines — trim before sending.
+                reply = (result.get("response") or "").strip() or "Xin lỗi, mình chưa có câu trả lời."
                 await run_in_threadpool(zalo.send_message, chat_id, reply)
             elif event_name.startswith("message."):
                 # image / sticker / voice / unsupported — the agent is text-only.

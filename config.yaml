@@ -4,7 +4,8 @@
 
 email:
   # Sender shown on outgoing mail. Real delivery via app/infrastructure/outlook_client.py.
-  from_address: "no-reply@vng.com.vn"
+  #from_address: "no-reply@vng.com.vn"
+  from_address: "hieunx@vng.com.vn" #update the bot email later
   from_name: "VNG Campus Bot"
 
 # Routing strategy for the agent graph:
@@ -24,8 +25,8 @@ roles:
     default: true
   owner:
     extends: requester
-    identities:
-      - "tour-coordinator@vng.com.vn"
+    identities: # những người làm owners của tour visit, có quyền approve tour request và receive notification về các tour request mới
+      - "hieunx@vng.com.vn"
       - "owner"
 
 services:
@@ -36,7 +37,7 @@ services:
     # The owner receives every new tour request and drives the follow-up process.
     owner:
       name: "Campus Tour Coordinator"
-      email: "tour-coordinator@vng.com.vn"
+      email: "hieunx@vng.com.vn" ## người đầu tiên nhận request để review
 
     # Fields the bot must collect before submitting a corporate-visit request.
     # Set required: false to make a field optional (bot will still ask but won't block submission).
@@ -55,6 +56,9 @@ services:
         required: true
       - key: visit_date
         label: "Preferred visit date"
+        required: true
+      - key: visit_time
+        label: "Preferred time (e.g. 14:00-16:00 or 2pm)"
         required: true
       - key: group_size
         label: "Number of guests"

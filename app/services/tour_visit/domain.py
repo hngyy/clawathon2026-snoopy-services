@@ -38,6 +38,7 @@ class TourRequest:
     group_size: int        # number of external guests
     purpose: str
     contact_email: str     # requester's contact for confirmation
+    visit_time: str = ""       # preferred time window, e.g. "14:00-16:00" (checked vs calendar)
     visit_type: str = ""       # "tour only" | "tour + meeting"
     guest_profile: str = ""    # background/seniority of the visiting guests
     partner_gift: str = ""     # selected partner gift (catalog pick wired later)

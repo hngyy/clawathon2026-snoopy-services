@@ -35,7 +35,6 @@ class AgentRouter:
         llm = build_llm(settings)
         services = registry.services()
 
-        checkpointer = None
         recall_node = None
         memory_tools: list = []
         if settings.memory_enabled:
@@ -43,6 +42,9 @@ class AgentRouter:
             checkpointer = build_checkpointer(settings.memory_id)
             memory_tools = build_memory_tools(container.memory_client, settings.memory_id, settings.memory_strategy_id)
             recall_node = make_recall_node(container.memory_client, settings.memory_id, settings.memory_strategy_id)
+        else:
+            from langgraph.checkpoint.memory import MemorySaver
+            checkpointer = MemorySaver()
 
         graphs = {}
         for role in config.roles():
@@ -52,6 +54,7 @@ class AgentRouter:
                 graphs[role] = build_supervisor_graph(
                     llm, services, role_chain=chain, assemble=assemble,
                     extra_tools=memory_tools, checkpointer=checkpointer, recall_node=recall_node,
+                    history_token_budget=settings.history_token_budget,
                 )
             else:  # flat
                 tools = [t for r in chain for t in registry.tools_for(r)]
@@ -59,6 +62,7 @@ class AgentRouter:
                 graphs[role] = build_tool_graph(
                     llm, tools + memory_tools, assemble(sections),
                     checkpointer=checkpointer, recall_node=recall_node,
+                    history_token_budget=settings.history_token_budget,
                 )
 
         return cls(config=config, graphs=graphs)

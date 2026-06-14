@@ -12,12 +12,16 @@ impersonate another user. strategy_id is a deployment-time constant.
 from __future__ import annotations
 
 from langchain_core.messages import SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.config import get_config
 
 from greennode_agent_bridge import AgentBaseMemoryEvents
 from greennode_agentbase.memory import MemoryClient
-from greennode_agentbase.memory.models import MemoryRecordSearchRequest
+from greennode_agentbase.memory.models import (
+    MemoryRecordInsertDirectlyRequest,
+    MemoryRecordSearchRequest,
+)
 
 from app.agent.state import State
 
@@ -36,24 +40,35 @@ def build_memory_tools(memory_client: MemoryClient, memory_id: str, strategy_id:
     @tool
     def remember(fact: str) -> str:
         """Store a fact in long-term memory for later retrieval."""
-        memory_client.insert_memory_records_directly(
-            id=memory_id,
-            namespace=_namespace(_actor_id()),
-            request=[fact],
-        )
+        try:
+            memory_client.insert_memory_records_directly(
+                id=memory_id,
+                namespace=_namespace(_actor_id()),
+                request=MemoryRecordInsertDirectlyRequest(memory_records=[fact]),
+            )
+        except Exception as e:  # degrade gracefully — don't crash the turn
+            return f"Could not save to long-term memory: {e}"
         return f"Remembered: {fact}"
 
     @tool
     def recall(query: str) -> str:
         """Search long-term memory for facts relevant to a query."""
-        results = memory_client.search_memory_records(
-            id=memory_id,
-            namespace=_namespace(_actor_id()),
-            request=MemoryRecordSearchRequest(query=query, limit=5),
-        )
-        if not results:
-            return "No relevant memories found."
-        return "\n".join(f"- {r.memory} (score: {r.score:.2f})" for r in results)
+        try:
+            results = memory_client.search_memory_records(
+                id=memory_id,
+                namespace=_namespace(_actor_id()),
+                request=MemoryRecordSearchRequest(query=query, limit=5),
+            )
+            if not results:
+                return "No relevant memories found."
+            lines = []
+            for r in results:
+                mem = getattr(r, "memory", None) or ""
+                score = getattr(r, "score", None)
+                lines.append(f"- {mem} (score: {score:.2f})" if isinstance(score, (int, float)) else f"- {mem}")
+            return "\n".join(lines)
+        except Exception as e:  # search or formatting failed — degrade gracefully
+            return f"Could not search long-term memory: {e}"
 
     return [remember, recall]
 
@@ -61,7 +76,7 @@ def build_memory_tools(memory_client: MemoryClient, memory_id: str, strategy_id:
 def make_recall_node(memory_client: MemoryClient, memory_id: str, strategy_id: str):
     """Return a node that auto-injects relevant memories before the chatbot responds."""
 
-    def recall_memories(state: State, config: dict) -> dict:
+    def recall_memories(state: State, config: RunnableConfig) -> dict:
         actor_id = config["configurable"].get("actor_id", "default")
         last = state["messages"][-1].content if state["messages"] else ""
         if not last:

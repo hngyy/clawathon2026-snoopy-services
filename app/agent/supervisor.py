@@ -29,6 +29,7 @@ def build_supervisor_graph(
     extra_tools: list | None = None,
     checkpointer=None,
     recall_node=None,
+    history_token_budget: int = 8000,
 ):
     extra_tools = extra_tools or []  # e.g. memory tools — bound in every subgraph + general
 
@@ -51,14 +52,14 @@ def build_supervisor_graph(
 
     route_map: dict[str, str] = {}
     for s in included:
-        subgraph = build_tool_graph(llm, tools_of(s) + extra_tools, assemble([section_of(s)]))
+        subgraph = build_tool_graph(llm, tools_of(s) + extra_tools, assemble([section_of(s)]), history_token_budget=history_token_budget)
         node = f"svc_{s.key}"
         builder.add_node(node, subgraph)
         builder.add_edge(node, END)
         route_map[s.key] = node
 
     # Fallback: plain chat with no service tools (memory tools still available).
-    builder.add_node("general", build_tool_graph(llm, extra_tools, assemble([])))
+    builder.add_node("general", build_tool_graph(llm, extra_tools, assemble([]), history_token_budget=history_token_budget))
     builder.add_edge("general", END)
     route_map["general"] = "general"
 

@@ -17,6 +17,9 @@ def build_llm(settings: Settings) -> ChatOpenAI:
         model=settings.llm_model,
         openai_api_base=settings.llm_base_url,
         openai_api_key=settings.llm_api_key,
+        # temperature=0 for reliable, deterministic tool selection (this is an
+        # agentic tool-calling bot, not a creative writer).
+        temperature=0,
         http_client=_HTTP_CLIENT,
         http_async_client=_HTTP_ASYNC_CLIENT,
     )

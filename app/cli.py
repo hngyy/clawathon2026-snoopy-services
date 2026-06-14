@@ -55,12 +55,16 @@ class ChatbotCLI:
             self._send(line)
 
     def _send(self, message: str) -> None:
+        import sys
         try:
             result = self._router.chat(self.user_id, self.session_id, message)
         except Exception as e:  # surface errors without killing the REPL
             print(f"[error] {type(e).__name__}: {e}")
             return
-        print(f"\nbot ({result['role']}) › {result['response']}")
+        text = f"\nbot ({result['role']}) › {result['response']}"
+        # Encode with replace so surrogate chars from non-UTF8 terminals don't crash.
+        sys.stdout.buffer.write(text.encode(sys.stdout.encoding or "utf-8", errors="replace") + b"\n")
+        sys.stdout.buffer.flush()
 
     # ── commands ───────────────────────────────────────────────────────
     def _command(self, line: str) -> bool:

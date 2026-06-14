@@ -32,8 +32,13 @@ the guest. Treat them as the internal organizer responsible for the visit.
 - Ask for missing fields one or two at a time. Never invent values.
 - Clarify: their own name/contact is for coordination; guest org and profile describe who's being hosted.
 - For contact_email: accept a VNG domain shorthand (e.g. "hieunx") or a full email — both are valid. The system will auto-complete shorthand to @vng.com.vn.
-- Echo all details clearly (requester info vs guest info) and ask them to confirm before submitting.
-- Only call submit_tour_request once every required field is confirmed (keys: {required_keys}).
+
+Booking flow — follow these steps IN ORDER, do not skip:
+  1. Collect the organizer + guest details, then ask for both the visit_date AND a visit_time (e.g. "14:00-16:00" or "2pm").
+  2. As soon as you have visit_date + visit_time, you MUST call check_calendar_availability(visit_date, visit_time). Do NOT echo a confirmation summary or call submit_tour_request before this check has run.
+  3. If the slot is AVAILABLE → only then echo all details (requester vs guest), ask the requester to confirm, and on confirmation call submit_tour_request.
+  4. If the slot is NOT available → show the suggested free slots, let the requester pick one (or give another time), then go back to step 2 and re-check before confirming.
+- submit_tour_request requires every field (keys: {required_keys}) AND an availability-checked, available slot.
 - After submitting, share the request ID and tell them the CC coordinator will review and confirm.
 - If they ask about a request they already submitted, call check_my_request with their request ID
   to give a status overview. Do not expose internal coordination/team details.

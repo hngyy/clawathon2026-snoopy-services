@@ -23,6 +23,7 @@ class Settings:
     outbox_path: Path
     memory_id: str | None
     memory_strategy_id: str | None
+    history_token_budget: int  # max tokens of conversation history sent to the LLM per turn
     # Trello (BIE team cards) — optional; unset → notify_team falls back to email.
     trello_api_key: str | None
     trello_token: str | None
@@ -33,6 +34,7 @@ class Settings:
     # Zalo Bot Platform (bot.zaloplatforms.com) — optional; unset → /zalo/webhook is not mounted.
     zalo_bot_token: str | None
     zalo_webhook_secret: str | None
+    zalo_owner_password: str | None  # enables `/owner <password>` in-chat elevation; unset → disabled
 
     @property
     def zalo_enabled(self) -> bool:
@@ -61,6 +63,7 @@ class Settings:
             outbox_path=Path(os.environ.get("OUTBOX_PATH", "outbox.log")),
             memory_id=os.environ.get("MEMORY_ID") or None,
             memory_strategy_id=os.environ.get("MEMORY_STRATEGY_ID") or None,
+            history_token_budget=int(os.environ.get("HISTORY_TOKEN_BUDGET", "8000")),
             **_integration_credentials(),
             **_zalo_credentials(),
         )
@@ -72,10 +75,12 @@ def _zalo_credentials() -> dict:
     zalo = load_credentials("zalo", {
         "bot_token": "ZALO_BOT_TOKEN",
         "webhook_secret": "ZALO_WEBHOOK_SECRET",
+        "owner_password": "ZALO_OWNER_PASSWORD",
     })
     return {
         "zalo_bot_token": zalo["bot_token"],
         "zalo_webhook_secret": zalo["webhook_secret"],
+        "zalo_owner_password": zalo["owner_password"],
     }
 
 
