@@ -44,6 +44,35 @@ _STAGE_TRACK = [
     ("approved", "Approved"), ("scheduled", "Scheduled"), ("completed", "Completed"),
 ]
 
+# Email subject + opening line sent to the requester on each status transition.
+# Keys match TourStatus values. Statuses that don't warrant a requester email are omitted.
+_STATUS_EMAIL: dict[str, tuple[str, str]] = {
+    "in_review": (
+        "[Visit Update] {id} — {org} | Under Review",
+        "Your campus visit request is now under review by the coordinator.",
+    ),
+    "approved": (
+        "[Visit Update] {id} — {org} | Approved",
+        "Great news — your campus visit request has been approved!\n"
+        "The coordinator is now arranging the final schedule with the support teams.",
+    ),
+    "scheduled": (
+        "[Visit Update] {id} — {org} | Confirmed & Scheduled",
+        "Your visit has been confirmed and scheduled.\n"
+        "Date: {visit_date}   Time: {visit_time}\n"
+        "Our teams are now preparing for the visit.",
+    ),
+    "completed": (
+        "[Visit Update] {id} — {org} | Completed",
+        "Your campus visit has been marked as completed. Thank you for organising it!",
+    ),
+    "rejected": (
+        "[Visit Update] {id} — {org} | Not Approved",
+        "We're sorry — your campus visit request could not be approved at this time.\n"
+        "Please contact the campus tour coordinator for more details.",
+    ),
+}
+
 
 def _normalize_contact_email(value: str) -> str:
     """Accept 'hieunx', 'hieunx@vng.com.vn', or any full email.
@@ -333,16 +362,24 @@ def build_tools(
         )
 
     @tool
-    def update_tour_status(request_id: str, status: str, note: str = "") -> str:
-        """(Owner) Update the status of a tour request.
+    def update_tour_status(request_id: str, status: str, note: str = "", confirmed_time: str = "") -> str:
+        """(Owner) Update the status of a tour request and automatically notify the requester by email.
         Valid statuses: new, in_review, approved, scheduled, completed, rejected.
-        Setting status to 'scheduled' also creates a calendar event for the visit."""
+        Setting status to 'scheduled' also creates a calendar event for the visit.
+        confirmed_time: final confirmed visit time (e.g. "14:00-16:00") — use when the owner
+          locks a different time from the original request. Updates the stored visit_time and
+          uses it for the calendar event. If omitted, the originally requested time is used.
+        The note is included in the requester email (e.g. schedule details, rejection reason)."""
         if not TourStatus.is_valid(status):
             return f"Invalid status '{status}'. Valid: {', '.join(TourStatus.values())}."
-        r = repo.update(request_id, status=status, note=note)
+
+        # Update visit_time first so the calendar event and email use the confirmed time.
+        r = repo.update(request_id, status=status, note=note,
+                        visit_time=confirmed_time if confirmed_time else None)
         if not r:
             return f"No request found with ID {request_id}."
 
+        calendar_note = ""
         # Create the campus calendar event once the visit is scheduled — idempotent.
         if status == TourStatus.SCHEDULED.value and google_client and not r.external_refs.get("calendar"):
             try:
@@ -356,14 +393,31 @@ def build_tools(
                     visit_time=r.visit_time,
                 )
                 repo.update(request_id, external_refs={"calendar": link})
-                return f"Request {request_id} updated to 'scheduled'. Calendar event: {link}"
+                calendar_note = f"\nCalendar event: {link}"
             except Exception as exc:
                 logger.warning("Calendar event creation failed for %s: %s", request_id, exc)
-                return (
-                    f"Request {request_id} updated to 'scheduled', but the calendar event "
-                    f"could not be created ({exc})."
-                )
-        return f"Request {request_id} updated to '{status}'."
+                calendar_note = f"\n(Calendar event could not be created: {exc})"
+
+        # Auto-notify the requester for every status that warrants an email.
+        if status in _STATUS_EMAIL and r.contact_email:
+            subject_tpl, opening = _STATUS_EMAIL[status]
+            subject = subject_tpl.format(id=r.id, org=r.organization)
+            opening = opening.format(visit_date=r.visit_date, visit_time=r.visit_time,
+                                     id=r.id, org=r.organization)
+            body_parts = [
+                f"Dear {r.requester_name},\n",
+                opening,
+                f"\nRequest ID  : {r.id}",
+                f"Organization: {r.organization}",
+                f"Visit date  : {r.visit_date}   {r.visit_time}",
+            ]
+            if note:
+                body_parts.append(f"\nNote from coordinator:\n{note}")
+            body_parts.append(f"\n{cfg.owner_name}")
+            mailer.send(to=r.contact_email, subject=subject, body="\n".join(body_parts))
+            logger.info("Status email (%s) sent to %s for %s", status, r.contact_email, r.id)
+
+        return f"Request {request_id} updated to '{status}'.{calendar_note}"
 
     @tool
     def notify_team(request_id: str, team_key: str, message: str) -> str:

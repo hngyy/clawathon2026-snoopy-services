@@ -11,6 +11,9 @@ The first service is **Campus Tour Visit**, owned by the **CBC team** — helpin
 | Service | Team | What it does |
 |---------|------|--------------|
 | `tour_visit` | CBC | Organize corporate campus visits — slot-fill request, notify coordinator, manage follow-up |
+| `zalo_media` | — | Transport capability: send stickers / photos into the current Zalo chat |
+
+> `zalo_media` is not a domain service — it auto-registers **only when a Zalo bot is configured** and self-skips outside Zalo (CLI / HTTP `/invocations`). See `app/services/zalo_media/`.
 
 > Adding a new service only requires a new folder under `app/services/` and an entry in `config.yaml`. No changes to the agent, graph, or server.
 
@@ -19,11 +22,15 @@ The first service is **Campus Tour Visit**, owned by the **CBC team** — helpin
 ## How it works
 
 ```
-POST /invocations  {message}
-        │
-        │  role resolved from X-GreenNode-AgentBase-User-Id header
-        ├─── requester (default) ──▶  REQUESTER graph
-        └─── owner               ──▶  OWNER graph  (extends requester — all tools)
+ Two channels, one agent:
+ POST /invocations  {message}            POST /zalo/webhook   (Zalo Bot push)
+        │                                        │  verify secret token
+        │                                        │  /whoami · /owner <pw> · /signout  ── handled here
+        │                                        ▼  (else) chat_id → session_id
+        └──────────────────┬─────────────────────┘
+                           │  role resolved from user id (header / Zalo sender)
+        ┌──── requester (default) ──▶  REQUESTER graph
+        └──── owner               ──▶  OWNER graph  (extends requester — all tools)
                                 │
                          ┌──────┴──────┐
                          ▼             ▼
@@ -31,16 +38,22 @@ POST /invocations  {message}
                (long-term facts)  (short-term turns)
                          │
                          ▼  chatbot
-               requester tools              owner tools
-            ──────────────────────   ──────────────────────────
-            get_tour_process_info    list_tour_requests
-            submit_tour_request      get_tour_request
-            check_my_request         update_tour_status
-                                     notify_team
-                                     check_visit_progress
+               requester tools                owner tools
+            ──────────────────────────   ──────────────────────────
+            get_tour_process_info        list_tour_requests
+            submit_tour_request          get_tour_request
+            check_calendar_availability  update_tour_status
+            check_my_request             notify_team
+                                         check_visit_progress
+
+               zalo_media tools (every role, Zalo only)
+            ─────────────────────────────────────────────
+            send_zalo_photo · send_zalo_sticker
 ```
 
 **Roles** are data-driven in `config.yaml` — each role lists `identities` (matched user IDs), may `extend` another role, and one is the `default` for unmatched users. Adding a role is config-only.
+
+**Owner elevation** is dual: a user id listed in `owner.identities` is always the owner, *and* on Zalo anyone who sends `/owner <password>` is elevated at runtime — persisted in `zalo_owners.json` via `OwnerStore` (`app/server.py`), no redeploy needed.
 
 **Routing topology** (`routing:` in `config.yaml`):
 - `flat` — all service tools bound to one LLM per role. Best for 1–3 services.
@@ -68,18 +81,23 @@ The **owner** uses the same bot to list requests, update status (`new → in_rev
 ```
 main.py                          # thin entrypoint → app.server.app
 chatbot_cli.py                   # local REPL tester (no HTTP)
+zalo_setup.py                    # register / inspect the Zalo Bot webhook (me/set/info/delete)
 config.yaml                      # business config: roles, routing, per-service settings
 rules/                           # rule markdown files → auto-generated read-only tools
   tour_visit/
 app/
-  settings.py                    # env vars (LLM, memory, paths) — fail-fast on missing
+  settings.py                    # env vars (LLM, memory, paths, Zalo) — fail-fast on missing
   config.py                      # config.yaml → AppConfig, role_for(), role_chain()
-  container.py                   # shared deps: settings, config, mailer, memory_client
+  container.py                   # shared deps: settings, config, mailer, memory_client, zalo_client
   bootstrap.py                   # builds AgentRouter (shared by server + CLI)
-  server.py                      # FastAPI HTTP adapter for AgentBase runtime
+  server.py                      # AgentBase HTTP adapter + /zalo/webhook + in-chat commands
   cli.py                         # ChatbotCLI — local REPL
   infrastructure/
     outlook_client.py            # OutlookSender — Graph API email, outbox-stub fallback
+    trello_client.py             # Trello cards (BIE team channel)
+    google_client.py             # Google Sheets (team tasks) + Calendar (campus events)
+    zalo_bot_client.py           # Zalo Bot API client (sendMessage / sendPhoto / sendSticker)
+    zalo_owner_store.py          # OwnerStore — /owner elevation, persisted to zalo_owners.json
   agent/
     state.py                     # State TypedDict (messages + route)
     llm.py                       # LLM client factory
@@ -91,7 +109,7 @@ app/
     router.py                    # role resolution + flat/supervisor toggle
   services/
     registry.py                  # ServiceRegistry
-    __init__.py                  # register_all() — add new services to REGISTRARS here
+    __init__.py                  # register_all() — REGISTRARS = [tour_visit, zalo_media]
     tour_visit/                  # self-contained CBC tour-visit service
       config.py                  # TourServiceConfig, RequestField, Team
       domain.py                  # TourRequest, TourStatus (pure data, no I/O)
@@ -99,6 +117,8 @@ app/
       prompts.py                 # build_requester_prompt / build_owner_prompt
       tools.py                   # build_tools() → {role: [tools]}
       __init__.py                # register(container, registry)
+    zalo_media/                  # transport capability — Zalo photo/sticker tools
+      __init__.py                # register() — self-skips unless a Zalo bot is configured
 ```
 
 **Layer rule:** `app/` core is service-agnostic. Each service is self-contained under `app/services/<name>/` and never imports from other services.
@@ -127,6 +147,7 @@ the same values as secrets.
 | Outlook / Graph | `app/credentials/o365.credentials.json` | `tenant_id`, `client_id` |
 | Trello (BIE) | `app/credentials/trello.credentials.json` | `api_key`, `token` |
 | Google (sheet + calendar) | `app/credentials/google.credentials.json` | `service_account`, `sheet_id`, `calendar_id` |
+| Zalo Bot | `app/credentials/zalo.credentials.json` | `bot_token`, `webhook_secret`, `owner_password` |
 
 OAuth token caches are written to `app/credentials/cache/`. Edit the
 `app/credentials/*.credentials.json` files directly to fill in each integration's
@@ -147,6 +168,10 @@ credential files; for Google, share the sheet + calendar with the service-accoun
 
 **Memory** (optional — stateless if unset): set `MEMORY_ID` + `MEMORY_STRATEGY_ID` in
 `.env` (create a store with `/agentbase-memory`) to enable short- and long-term memory.
+
+**Zalo Bot** (optional — `/zalo/webhook` is not mounted if unset): fill
+`zalo.credentials.json` with at least `bot_token`. See [Use it on Zalo](#use-it-on-zalo-primary-channel)
+for webhook registration and in-chat commands.
 
 ---
 
@@ -178,11 +203,49 @@ Keep the same `session_id` across requests for multi-turn conversation.
 
 Health check: `curl http://127.0.0.1:8080/health`
 
+## Use it on Zalo (primary channel)
+
+In production Snoopy is a **Zalo Bot**. When a bot token is configured the server mounts
+`POST /zalo/webhook` (`app/server.py`), which verifies the secret token, handles in-chat
+commands, then runs the agent — replying via the Zalo Bot `sendMessage` API. The Zalo
+`chat_id` is used as the conversation `session_id`, so each chat is its own thread.
+
+**1. Configure the bot** — put the token in `app/credentials/zalo.credentials.json`
+(or set the env vars; env overrides the file):
+```json
+{"bot_token": "...", "webhook_secret": "...", "owner_password": "..."}
+```
+- `bot_token` (required) — set ⇒ `/zalo/webhook` is mounted (`zalo_enabled`).
+- `webhook_secret` (recommended) — must match what's registered with Zalo; pushes with a
+  bad/missing `X-Bot-Api-Secret-Token` are rejected `403`.
+- `owner_password` (optional) — enables the `/owner <password>` in-chat elevation below.
+
+**2. Register the webhook** against your deployed HTTPS endpoint (`zalo_setup.py`):
+```bash
+python zalo_setup.py me                                    # verify token (getMe)
+python zalo_setup.py set --url https://<endpoint>/zalo/webhook
+python zalo_setup.py info                                  # getWebhookInfo
+python zalo_setup.py delete                                # remove the webhook
+```
+If `webhook_secret` is unset, `set` generates and prints one — save it as
+`ZALO_WEBHOOK_SECRET` on the runtime **and** locally so both sides match.
+
+**3. In-chat commands** (handled before the agent — `app/server.py`):
+
+| Command | Effect |
+|---------|--------|
+| `/whoami` | Show your Zalo id, display name, and resolved role |
+| `/owner <password>` | Elevate this Zalo account to the **owner** role (persisted, no redeploy). **Demo password: `12345678` (public until end of June 2026)** |
+| `/signout` (also `/logout`, `/requester`) | Drop back to the requester role |
+
+Non-text messages (image / sticker / voice) get a "text only" reply, and the webhook always
+acks `200` to Zalo even on internal error to avoid retry storms.
+
 ## CLI tester (no HTTP)
 
 ```bash
 python chatbot_cli.py                              # default role (requester)
-python chatbot_cli.py --user tour-coordinator@vng.com.vn   # as owner
+python chatbot_cli.py --user hieunx@vng.com.vn   # as owner
 python chatbot_cli.py --user hieunx --session demo-1
 ```
 
@@ -216,3 +279,27 @@ No changes to the agent, graph, router, or server.
 # Monitor logs and metrics
 /agentbase-monitor
 ```
+
+---
+
+## Roadmap / To do later
+
+Current placeholders and known gaps — all wired to work, just pointed at stand-in values:
+
+- **Bot identity email** — `config.yaml` `email.from_address` is `hieunx@vng.com.vn` (marked
+  "update the bot email later"). Swap for the real no-reply / bot mailbox.
+- **Team routing targets** — every team `email:` in `config.yaml` is the placeholder
+  `hieunx@vng.com.vn` (real addresses are commented out); BIE/EB/PR names + emails are flagged
+  "confirm with CC". Fill in real team contacts and Trello list ids.
+- **Owner identities** — `owner.identities` hardcodes a single address. Broaden to the real CBC
+  coordinator group, or rely on `/owner <password>` runtime elevation.
+- **`check_my_request` access** — gated only by knowing the `TOUR-XXXX` id (it acts as a bearer
+  token); there's no binding between the requester and `contact_email`. Add ownership
+  verification if request IDs need to be private.
+- **More services / supervisor routing** — only `tour_visit` ships today. `routing: supervisor`
+  (see [docs/supervisor-routing.md](docs/supervisor-routing.md)) is built for 4+ services but
+  unused — add more CBC services and switch routing when the tool count grows.
+- **Group-chat @mentions** — `@Snoopy` is cosmetic; the bot replies to every message and
+  responds according to the sender's role. Mention-gating could be added for noisy group chats.
+- **`.env.example` cleanup** — it still references `python -m app.infrastructure.mailer login`;
+  the real module is `app.infrastructure.outlook_client`. Minor doc fix.

@@ -86,6 +86,8 @@ class TourRepository:
         status: str | None = None,
         note: str | None = None,
         external_refs: dict | None = None,
+        visit_date: str | None = None,
+        visit_time: str | None = None,
     ) -> "TourRequest | None":
         with self._lock:
             data = self._read()
@@ -96,6 +98,10 @@ class TourRepository:
             now = datetime.now().isoformat()
             if status:
                 request.status = status
+            if visit_date:
+                request.visit_date = visit_date
+            if visit_time:
+                request.visit_time = visit_time
             if external_refs:
                 # Shallow-merge so e.g. {"trello": {"bie": id}} doesn't clobber other teams.
                 for key, value in external_refs.items():

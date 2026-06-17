@@ -57,6 +57,11 @@ Tools:
 - get_tour_request — full details and history of a single request
 - update_tour_status — advance status: new → in_review → approved → scheduled → completed (or rejected).
   Setting 'scheduled' automatically creates the campus calendar event for the visit.
+  Every status change automatically emails the requester. Pass a meaningful `note` so they
+  get useful context (e.g. confirmed time slot, what to prepare, rejection reason).
+  When setting 'scheduled', always pass `confirmed_time` (e.g. "14:00-16:00") if the
+  final time differs from the original request — this updates the stored time and the
+  calendar event uses the confirmed slot.
 - notify_team — dispatch prep work to a supporting team ({team_list}). Routing is automatic:
   BIE → Trello card; other teams → a row in the shared task sheet (they update their own status).
 - check_visit_progress — read back each team's current status across Trello + the sheet.
