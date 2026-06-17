@@ -8,12 +8,8 @@ __pycache__/
 .o365_token_cache.json
 service_account.json
 service-account.json
-# OAuth token caches & other runtime credential cache files
-app/credentials/cache/*
-!app/credentials/cache/.gitkeep
 .agentbase/
 .agentbase-state.json
-*.credentials.json
 .venv/
 venv/
 *.egg-info/
@@ -22,3 +18,8 @@ build/
 # local runtime data
 outbox.log
 tour_requests.json
+demo
+app/credentials/*
+!app/credentials/cache/*.sample
+!app/credentials/*.sample
+!app/credentials/cache/.gitkeep
