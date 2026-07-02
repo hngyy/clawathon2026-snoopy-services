@@ -284,7 +284,7 @@ def build_tools(
 
         updated = (r.updated_at or r.created_at or "").split("T")[0]
         return (
-            f"Request {r.id} — {r.organization}, visit on {r.visit_date}\n"
+            f"Request {r.id} — {r.organization}, visit on {r.visit_date} {r.visit_time}\n"
             f"Status: {status_line}\n"
             f"{track}"
             f"Last updated: {updated}"
@@ -353,7 +353,7 @@ def build_tools(
             f"Profile: {r.guest_profile}\n"
             f"Size   : {r.group_size}\n"
             f"── Visit ────────────────────────────\n"
-            f"Type   : {r.visit_type}   Date: {r.visit_date}\n"
+            f"Type   : {r.visit_type}   Date: {r.visit_date}   Time: {r.visit_time}\n"
             f"Purpose: {r.purpose}\n"
             f"Meeting: {r.meeting_topic}\n"
             f"Gift   : {r.partner_gift}\n"
@@ -437,8 +437,10 @@ def build_tools(
             f"Visit request {r.id} needs your team's preparation.\n\n"
             f"Requested by : {r.requester_name} ({r.contact_email})\n"
             f"Guest org    : {r.organization}   Profile: {r.guest_profile}\n"
-            f"Visit type   : {r.visit_type}   Date: {r.visit_date}   Size: {r.group_size}\n"
+            f"Visit type   : {r.visit_type}   Date: {r.visit_date}   Time: {r.visit_time}   Size: {r.group_size}\n"
             f"Purpose      : {r.purpose}\n"
+            f"Meeting topic: {r.meeting_topic}\n"
+            f"Partner gift : {r.partner_gift}\n"
             f"Your responsibilities: {resp}\n\n"
             f"Note from coordinator:\n{message}"
         )
@@ -456,7 +458,7 @@ def build_tools(
                     organization=r.organization,
                     visit_date=r.visit_date,
                     responsibilities=list(team.responsibilities),
-                    note=message,
+                    note=f"{body}\n\nCoordinator note: {message}",
                 )
                 outcome = f"Added a task row for {team.name} to the shared sheet"
             else:
@@ -478,7 +480,7 @@ def build_tools(
         r = repo.get(request_id)
         if not r:
             return f"No request found with ID {request_id}."
-        lines = [f"{r.id} — {r.organization} (request status: {r.status})"]
+        lines = [f"{r.id} — {r.organization}, visit on {r.visit_date} (request status: {r.status})"]
 
         trello_refs = r.external_refs.get("trello", {})
         for team_key, card_id in trello_refs.items():
