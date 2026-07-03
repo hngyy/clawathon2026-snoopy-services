@@ -122,7 +122,7 @@ class GoogleClient:
             valueInputOption="USER_ENTERED",
             insertDataOption="INSERT_ROWS",
             body={"values": [row]},
-        ).execute()
+        ).execute(num_retries=2)
         logger.info("Appended sheet task row for %s / %s", request_id, team_name)
 
     def get_task_rows(self, request_id: str) -> list:
@@ -131,7 +131,7 @@ class GoogleClient:
             raise GoogleClientError("GOOGLE_SHEET_ID is not configured.")
         result = self._sheets_api().spreadsheets().values().get(
             spreadsheetId=self._sheet_id, range=_SHEET_RANGE,
-        ).execute()
+        ).execute(num_retries=2)
         values = result.get("values", [])
         rows = []
         for r in values:
@@ -146,6 +146,55 @@ class GoogleClient:
                 "updated_at": r[9] if len(r) > 9 else "",
             })
         return rows
+
+    # ── Generic tab I/O ─────────────────────────────────────────────────────
+    # Used by the Sheets-backed tour repository to persist requests durably (a
+    # dedicated tab, one row per request) — separate from the team-task rows above.
+    def ensure_tab(self, title: str, header: list) -> None:
+        """Create the `title` tab with a header row if it does not exist yet. Idempotent."""
+        if not self._sheet_id:
+            raise GoogleClientError("GOOGLE_SHEET_ID is not configured.")
+        api = self._sheets_api()
+        meta = api.spreadsheets().get(spreadsheetId=self._sheet_id).execute(num_retries=2)
+        titles = {s["properties"]["title"] for s in meta.get("sheets", [])}
+        if title in titles:
+            return
+        api.spreadsheets().batchUpdate(
+            spreadsheetId=self._sheet_id,
+            body={"requests": [{"addSheet": {"properties": {"title": title}}}]},
+        ).execute(num_retries=2)
+        api.spreadsheets().values().update(
+            spreadsheetId=self._sheet_id, range=f"{title}!A1",
+            valueInputOption="RAW", body={"values": [header]},
+        ).execute(num_retries=2)
+        logger.info("Created sheet tab %r with header", title)
+
+    def read_tab(self, title: str) -> list:
+        """Return every row (including the header) of `title` as a list of lists."""
+        if not self._sheet_id:
+            raise GoogleClientError("GOOGLE_SHEET_ID is not configured.")
+        return self._sheets_api().spreadsheets().values().get(
+            spreadsheetId=self._sheet_id, range=f"{title}!A:Z",
+        ).execute(num_retries=2).get("values", [])
+
+    def append_tab_row(self, title: str, row: list) -> None:
+        """Append one row to the end of `title`."""
+        if not self._sheet_id:
+            raise GoogleClientError("GOOGLE_SHEET_ID is not configured.")
+        self._sheets_api().spreadsheets().values().append(
+            spreadsheetId=self._sheet_id, range=f"{title}!A:Z",
+            valueInputOption="USER_ENTERED", insertDataOption="INSERT_ROWS",
+            body={"values": [row]},
+        ).execute(num_retries=2)
+
+    def update_tab_row(self, title: str, row_number: int, row: list) -> None:
+        """Overwrite a single 1-based `row_number` (header is row 1) in `title`."""
+        if not self._sheet_id:
+            raise GoogleClientError("GOOGLE_SHEET_ID is not configured.")
+        self._sheets_api().spreadsheets().values().update(
+            spreadsheetId=self._sheet_id, range=f"{title}!A{row_number}",
+            valueInputOption="USER_ENTERED", body={"values": [row]},
+        ).execute(num_retries=2)
 
     # ── Calendar ────────────────────────────────────────────────────────────--
     def create_visit_event(
@@ -195,7 +244,7 @@ class GoogleClient:
                 "start": {"date": day.isoformat()},
                 "end": {"date": (day + timedelta(days=1)).isoformat()},
             }
-        event = self._calendar_api().events().insert(calendarId=self._calendar_id, body=body).execute()
+        event = self._calendar_api().events().insert(calendarId=self._calendar_id, body=body).execute(num_retries=2)
         logger.info("Created calendar event %s for %s", event.get("id"), request_id)
         return event.get("htmlLink", event.get("id", ""))
 
@@ -247,7 +296,7 @@ class GoogleClient:
             timeMax=time_max.isoformat(),
             singleEvents=True,
             orderBy="startTime",
-        ).execute().get("items", [])
+        ).execute(num_retries=2).get("items", [])
 
     @staticmethod
     def _event_window(ev: dict):

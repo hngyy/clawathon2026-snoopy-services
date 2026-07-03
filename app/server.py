@@ -9,6 +9,7 @@ ZALO_BOT_TOKEN), a `/zalo/webhook` route is also mounted so the Zalo Bot Platfor
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 from datetime import datetime
@@ -31,6 +32,24 @@ logger = logging.getLogger("tour_bot.server")
 _ZALO_SECRET_HEADER = "X-Bot-Api-Secret-Token"
 # user_id that resolves to the `owner` role — config.yaml lists it in owner.identities.
 _OWNER_UID = "owner"
+# The Zalo "typing" indicator expires client-side after a few seconds, but the agent
+# can take 8-17s — so re-send it on this interval until the reply is ready.
+_TYPING_REFRESH_S = 4.0
+
+
+async def _keep_typing(zalo: ZaloBotClient, chat_id: str, stop: asyncio.Event) -> None:
+    """Re-send the "typing" chat action every _TYPING_REFRESH_S seconds until `stop`
+    is set (i.e. the agent has produced a reply). Best-effort — a failed action never
+    interrupts the turn. Wakes immediately when `stop` is set, so no trailing sleep."""
+    while not stop.is_set():
+        try:
+            await run_in_threadpool(zalo.send_chat_action, chat_id, "typing")
+        except Exception:
+            logger.debug("sendChatAction failed for chat=%s (non-fatal)", chat_id)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=_TYPING_REFRESH_S)
+        except asyncio.TimeoutError:
+            pass
 
 
 def create_app() -> GreenNodeAgentBaseApp:
@@ -138,15 +157,18 @@ def _mount_zalo_webhook(
                     await run_in_threadpool(zalo.send_message, chat_id, command_reply)
                     return JSONResponse({"ok": True})
 
-                # Show a "typing" indicator while the agent works (best-effort).
-                try:
-                    await run_in_threadpool(zalo.send_chat_action, chat_id, "typing")
-                except Exception:
-                    logger.debug("sendChatAction failed for chat=%s (non-fatal)", chat_id)
-
                 # Elevated senders act as the owner; everyone else keeps their Zalo id.
                 actor = _OWNER_UID if owners.is_owner(sender) else sender
-                result = await run_in_threadpool(router.chat, actor, chat_id, text)
+
+                # Keep the "typing" indicator alive (it expires client-side after a few
+                # seconds) until the agent returns, so the chat never looks frozen.
+                stop_typing = asyncio.Event()
+                typing_task = asyncio.create_task(_keep_typing(zalo, chat_id, stop_typing))
+                try:
+                    result = await run_in_threadpool(router.chat, actor, chat_id, text)
+                finally:
+                    stop_typing.set()
+                    await typing_task
                 # LLM replies sometimes have leading/trailing blank lines — trim before sending.
                 reply = (result.get("response") or "").strip() or "Xin lỗi, mình chưa có câu trả lời."
                 await run_in_threadpool(zalo.send_message, chat_id, reply)

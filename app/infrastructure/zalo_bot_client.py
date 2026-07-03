@@ -29,6 +29,28 @@ _BASE = "https://bot-api.zaloplatforms.com"
 _TIMEOUT = 20
 # Zalo's setWebhook constraint: 8-256 chars, only A-Z a-z 0-9 _ - (no ':' etc.).
 _SECRET_RE = re.compile(r"[A-Za-z0-9_-]{8,256}")
+# Zalo sendMessage rejects text > 2000 chars with a 400 — longer replies are chunked.
+_MAX_MESSAGE_LEN = 2000
+
+
+def _split_message(text: str, limit: int = _MAX_MESSAGE_LEN) -> list:
+    """Split `text` into pieces of at most `limit` chars, breaking on the last
+    newline (then the last space) within each window so words/lines stay intact;
+    falls back to a hard cut only when there is no break point."""
+    parts: list = []
+    remaining = text
+    while len(remaining) > limit:
+        window = remaining[:limit]
+        cut = window.rfind("\n")
+        if cut <= 0:
+            cut = window.rfind(" ")
+        if cut <= 0:
+            cut = limit  # no whitespace in the window — hard cut
+        parts.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
+    if remaining:
+        parts.append(remaining)
+    return parts
 
 
 class ZaloBotError(RuntimeError):
@@ -59,10 +81,15 @@ class ZaloBotClient:
     # ── outbound ────────────────────────────────────────────────────────
     def send_message(self, chat_id: str, text: str) -> dict:
         """Send a text reply to a chat. chat_id comes from the update's
-        message.chat.id. Returns the API result (message_id, date)."""
-        data = self._request("sendMessage", {"chat_id": chat_id, "text": text})
-        logger.info("Sent Zalo message to chat=%s", chat_id)
-        return data.get("result", {})
+        message.chat.id. Replies longer than Zalo's 2000-char limit are split into
+        several sequential messages (Zalo rejects >2000 with a 400). Returns the
+        API result of the last part sent."""
+        parts = _split_message(text)
+        result: dict = {}
+        for chunk in parts:
+            result = self._request("sendMessage", {"chat_id": chat_id, "text": chunk}).get("result", {})
+        logger.info("Sent Zalo message to chat=%s (%d part(s))", chat_id, len(parts))
+        return result
 
     def send_chat_action(self, chat_id: str, action: str = "typing") -> dict:
         """Show a transient action indicator in the chat (e.g. "typing") while the
