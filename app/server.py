@@ -97,7 +97,7 @@ def _mount_zalo_webhook(
     """Add POST /zalo/webhook. Verifies the secret token, runs the agent for text
     messages, and replies via the Zalo Bot sendMessage API — all in-process.
 
-    In-chat commands (handled before the agent): /whoami, /owner <password>, /signout.
+    In-chat commands (handled before the agent): /help, /whoami, /owner <password>, /signout.
     """
     zalo = ZaloBotClient(settings.zalo_bot_token)
     secret = settings.zalo_webhook_secret
@@ -110,6 +110,21 @@ def _mount_zalo_webhook(
     def handle_command(stripped: str, sender: str, display_name: str) -> str | None:
         """Return a reply string if `stripped` is a recognised command, else None."""
         low = stripped.lower()
+        if low in ("/help", "/start"):
+            role = effective_role(sender)
+            lines = [
+                "👋 This bot has two roles:",
+                "- requester — organize a campus tour visit (default, that's you right now).",
+                "- owner — the campus tour coordinator: review/approve requests, notify teams.",
+                "",
+                f"You're currently: {role}.",
+            ]
+            if owner_password:
+                lines.append(f"Try /owner {owner_password} to switch to the owner role for this demo.")
+            else:
+                lines.append("Owner elevation is not configured on this bot.")
+            lines.append("Send /signout anytime to switch back to requester.")
+            return "\n".join(lines)
         if low == "/whoami":
             return f"Zalo id: {sender}\ndisplay_name: {display_name}\nrole: {effective_role(sender)}"
         if low == "/owner" or low.startswith("/owner "):

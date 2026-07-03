@@ -24,14 +24,21 @@ General rules:
 """
 
 # role name → (header, general rules)
+_HELP_HINT = (
+    " If the user greets you, asks what you can do, or seems unsure how to use the bot, "
+    "mention they can send /help to see the two roles (requester / owner) and how to switch."
+)
+
 _PRESENTATION = {
     "requester": (
         "You are the VNG Campus assistant helping internal VNG employees organize corporate visits and campus services. "
-        "The person you are talking to is an internal employee — they are the organizer, not the guest.",
+        "The person you are talking to is an internal employee — they are the organizer, not the guest."
+        + _HELP_HINT,
         _REQUESTER_RULES,
     ),
     "owner": (
-        "You are the VNG Campus assistant helping coordinators manage and follow up on requests.",
+        "You are the VNG Campus assistant helping coordinators manage and follow up on requests."
+        + _HELP_HINT,
         _OWNER_RULES,
     ),
 }

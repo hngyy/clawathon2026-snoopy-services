@@ -234,6 +234,7 @@ If `webhook_secret` is unset, `set` generates and prints one — save it as
 
 | Command | Effect |
 |---------|--------|
+| `/help` (also `/start`) | Explain the two roles (requester / owner) and how to switch, including the current demo `/owner` password |
 | `/whoami` | Show your Zalo id, display name, and resolved role |
 | `/owner <password>` | Elevate this Zalo account to the **owner** role (persisted, no redeploy). **Demo password: `12345678` (public until end of June 2026)** |
 | `/signout` (also `/logout`, `/requester`) | Drop back to the requester role |
