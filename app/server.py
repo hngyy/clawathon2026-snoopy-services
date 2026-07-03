@@ -114,16 +114,18 @@ def _mount_zalo_webhook(
             role = effective_role(sender)
             lines = [
                 "👋 This bot has two roles:",
-                "- requester — organize a campus tour visit (default, that's you right now).",
+                "- requester — organize a campus tour visit (default).",
                 "- owner — the campus tour coordinator: review/approve requests, notify teams.",
                 "",
                 f"You're currently: {role}.",
+                "",
+                "Available commands:",
+                "/help, /start — show this message",
+                "/whoami — show your Zalo id, display name, and current role",
+                "/owner <password> — elevate to the owner role"
+                + (f" (demo password: {owner_password})" if owner_password else " (not configured on this bot)"),
+                "/signout, /logout, /requester — switch back to the requester role",
             ]
-            if owner_password:
-                lines.append(f"Try /owner {owner_password} to switch to the owner role for this demo.")
-            else:
-                lines.append("Owner elevation is not configured on this bot.")
-            lines.append("Send /signout anytime to switch back to requester.")
             return "\n".join(lines)
         if low == "/whoami":
             return f"Zalo id: {sender}\ndisplay_name: {display_name}\nrole: {effective_role(sender)}"
